@@ -32,7 +32,7 @@ type Device struct {
 	cs            pin.OutputFunc
 	msg           *CANMsg
 	extended      bool
-	mcpMode       byte
+	mcpMode       Mode
 	configurePins func()
 }
 
@@ -148,6 +148,37 @@ func (d *Device) Tx(canid uint32, dlc uint8, data []byte) error {
 	return nil
 }
 
+// Mode is an operation mode of the CAN controller.
+type Mode uint8
+
+// Modes that SetMode accepts.
+const (
+	ModeNormal     Mode = modeNormal
+	ModeSleep      Mode = modeSleep
+	ModeLoopback   Mode = modeLoopBack
+	ModeListenOnly Mode = modeListenOnly
+)
+
+// SetMode changes the operation mode of the controller.
+//
+// Call it after Begin. The controller changes mode when the current message is complete.
+func (d *Device) SetMode(m Mode) error {
+	switch m {
+	case ModeNormal, ModeSleep, ModeLoopback, ModeListenOnly:
+	default:
+		return ErrInvalidParameter
+	}
+
+	return d.setMode(m)
+}
+
+// Mode returns the operation mode that the controller reports.
+//
+// The controller reports 0xE0 while it is not configured.
+func (d *Device) Mode() (Mode, error) {
+	return d.getMode()
+}
+
 func (d *Device) init(speed, clock byte) error {
 	err := d.Reset()
 	if err != nil {
@@ -201,7 +232,7 @@ func (d *Device) Reset() error {
 	return nil
 }
 
-func (d *Device) setCANCTRLMode(newMode byte) error {
+func (d *Device) setCANCTRLMode(newMode Mode) error {
 	// If the chip is asleep and we want to change mode then a manual wake needs to be done
 	// This is done by setting the wake up interrupt flag
 	// This undocumented trick was found at https://github.com/mkleemann/can/blob/master/can_sleep_mcp2515.c
@@ -243,7 +274,7 @@ func (d *Device) setCANCTRLMode(newMode byte) error {
 	return d.requestNewMode(newMode)
 }
 
-func (d *Device) setMode(opMode byte) error {
+func (d *Device) setMode(opMode Mode) error {
 	if opMode != modeSleep {
 		d.mcpMode = opMode
 	}
@@ -256,12 +287,12 @@ func (d *Device) setMode(opMode byte) error {
 	return nil
 }
 
-func (d *Device) getMode() (byte, error) {
+func (d *Device) getMode() (Mode, error) {
 	r, err := d.readRegister(mcpCANSTAT)
 	if err != nil {
 		return 0, err
 	}
-	return r & modeMask, nil
+	return Mode(r & modeMask), nil
 }
 
 func (d *Device) configRate(speed, clock byte) error {
@@ -775,10 +806,10 @@ func (d *Device) modifyRegister(addr, mask, data byte) error {
 	return nil
 }
 
-func (d *Device) requestNewMode(newMode byte) error {
+func (d *Device) requestNewMode(newMode Mode) error {
 	s := time.Now()
 	for {
-		err := d.modifyRegister(mcpCANCTRL, modeMask, newMode)
+		err := d.modifyRegister(mcpCANCTRL, modeMask, byte(newMode))
 		if err != nil {
 			return err
 		}
@@ -786,7 +817,7 @@ func (d *Device) requestNewMode(newMode byte) error {
 		if err != nil {
 			return err
 		}
-		if r&modeMask == newMode {
+		if Mode(r&modeMask) == newMode {
 			return nil
 		} else if e := time.Now(); e.Sub(s) > 200*time.Millisecond {
 			return ErrRequestNewModeMaxTimeEx
